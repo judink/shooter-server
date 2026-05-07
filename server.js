@@ -161,6 +161,50 @@ function toLeaderboardEntry(entry) {
   };
 }
 
+function sortEntries(entries) {
+  return [...entries].sort((a, b) => {
+    if (b.score !== a.score) {
+      return b.score - a.score;
+    }
+    return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+  });
+}
+
+function buildPlayerSummary(entries, telegramUserId) {
+  if (!telegramUserId) {
+    return null;
+  }
+
+  const userId = Number(telegramUserId);
+  if (!Number.isFinite(userId)) {
+    return null;
+  }
+
+  const sorted = sortEntries(entries);
+  const userEntries = sorted
+    .map((entry, index) => ({ ...entry, rank: index + 1 }))
+    .filter((entry) => entry.telegramUserId === userId);
+
+  if (!userEntries.length) {
+    return {
+      telegramUserId: userId,
+      currentRank: null,
+      bestRank: null,
+    };
+  }
+
+  const latestEntry = [...userEntries].sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+  )[0];
+  const bestRank = userEntries.reduce((best, entry) => Math.min(best, entry.rank), Number.POSITIVE_INFINITY);
+
+  return {
+    telegramUserId: userId,
+    currentRank: latestEntry.rank,
+    bestRank: Number.isFinite(bestRank) ? bestRank : null,
+  };
+}
+
 app.get("/health", (_req, res) => {
   res.json({ ok: true, service: "fih-shooter-leaderboard" });
 });
@@ -169,17 +213,13 @@ app.get("/api/leaderboard", async (req, res) => {
   try {
     const limit = clampLimit(req.query.limit);
     const store = await readStore();
-    const entries = [...store.entries]
-      .sort((a, b) => {
-        if (b.score !== a.score) {
-          return b.score - a.score;
-        }
-        return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
-      })
+    const sorted = sortEntries(store.entries);
+    const entries = sorted
       .slice(0, limit)
       .map(toLeaderboardEntry);
+    const playerSummary = buildPlayerSummary(store.entries, req.query.telegramUserId);
 
-    res.json({ entries, total: store.entries.length });
+    res.json({ entries, total: store.entries.length, playerSummary });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Failed to load leaderboard" });
@@ -205,12 +245,7 @@ app.post("/api/leaderboard/submit", async (req, res) => {
 
     const store = await readStore();
     store.entries.push(entry);
-    store.entries.sort((a, b) => {
-      if (b.score !== a.score) {
-        return b.score - a.score;
-      }
-      return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
-    });
+    store.entries = sortEntries(store.entries);
     store.entries = store.entries.slice(0, 5000);
     await writeStore(store);
 
